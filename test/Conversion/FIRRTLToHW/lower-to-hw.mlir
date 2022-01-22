@@ -315,10 +315,15 @@ firrtl.circuit "Simple"   attributes {annotations = [{class =
     // CHECK: [[SEXT:%.+]] = comb.concat {{.*}}, %in3 : i1, i8
     // CHECK: = comb.sub %c0_i9, [[SEXT]] : i9
     %54 = firrtl.neg %in3 : (!firrtl.sint<8>) -> !firrtl.sint<9>
-    // CHECK: hw.output %false, %false : i1, i1
     firrtl.connect %out1, %53 : !firrtl.sint<1>, !firrtl.sint<1>
     %55 = firrtl.neg %in5 : (!firrtl.sint<0>) -> !firrtl.sint<1>
-    firrtl.connect %out2, %55 : !firrtl.sint<1>, !firrtl.sint<1>
+
+    %61 = firrtl.multibit_mux %17, %55, %55, %55 : !firrtl.uint<1>, !firrtl.sint<1>
+    // CHECK:      %[[ZEXT_INDEX:.+]] = comb.concat %false, {{.*}} : i1, i1
+    // CHECK-NEXT: %[[ARRAY:.+]] = hw.array_create %false, %false, %false
+    // CHECK-NEXT: %[[ARRAY_GET:.+]] = hw.array_get %[[ARRAY]][%[[ZEXT_INDEX]]]
+    // CHECK: hw.output %false, %[[ARRAY_GET]] : i1, i1
+    firrtl.connect %out2, %61 : !firrtl.sint<1>, !firrtl.sint<1>
   }
 
 //   module Print :
@@ -1598,4 +1603,12 @@ firrtl.circuit "Simple"   attributes {annotations = [{class =
     firrtl.connect %c, %foo : !firrtl.uint<1>, !firrtl.uint<1>
   }
 
+  // CHECK-LABEL: hw.module @MutlibitMux(%source_0: i1, %source_1: i1, %source_2: i1, %index: i2) -> (sink: i1) {
+  firrtl.module @MutlibitMux(in %source_0: !firrtl.uint<1>, in %source_1: !firrtl.uint<1>, in %source_2: !firrtl.uint<1>, out %sink: !firrtl.uint<1>, in %index: !firrtl.uint<2>) {
+    %0 = firrtl.multibit_mux %index, %source_0, %source_1, %source_2 : !firrtl.uint<2>, !firrtl.uint<1>
+    firrtl.connect %sink, %0 : !firrtl.uint<1>, !firrtl.uint<1>
+    // CHECK-NEXT: %0 = hw.array_create %source_2, %source_1, %source_0 : i1
+    // CHECK-NEXT: %1 = hw.array_get %0[%index] : !hw.array<3xi1>
+    // CHECK-NEXT: hw.output %1 : i1
+  }
 }

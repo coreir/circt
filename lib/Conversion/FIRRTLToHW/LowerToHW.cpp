@@ -1408,6 +1408,7 @@ struct FIRRTLLowering : public FIRRTLVisitor<FIRRTLLowering, LogicalResult> {
   }
   LogicalResult visitExpr(TailPrimOp op);
   LogicalResult visitExpr(MuxPrimOp op);
+  LogicalResult visitExpr(MultibitMuxOp op);
   LogicalResult visitExpr(VerbatimExprOp op);
 
   // Statements
@@ -3165,6 +3166,30 @@ LogicalResult FIRRTLLowering::visitExpr(MuxPrimOp op) {
 
   return setLoweringTo<comb::MuxOp>(op, ifTrue.getType(), cond, ifTrue,
                                     ifFalse);
+}
+
+LogicalResult FIRRTLLowering::visitExpr(MultibitMuxOp op) {
+  // Lower and resize to the index width.
+  auto index = getLoweredAndExtOrTruncValue(
+      op.index(), UIntType::get(op.getContext(),
+                                getBitWidthFromVectorSize(op.inputs().size())));
+
+  if (!index)
+    return failure();
+  SmallVector<Value> loweredInputs(op.inputs().size());
+  // Note: operands of multibit_mux must be reveresed while lowering.
+  // multibit_mux i, [v_0, v_1, .., v_{n-1}]
+  // => array_get[v_{n-1}, .., v_2, v_1][i]
+  unsigned i = op.inputs().size();
+  for (auto input : op.inputs()) {
+    auto lowered = getLoweredAndExtendedValue(input, op.getType());
+    if (!lowered)
+      return failure();
+    --i;
+    loweredInputs[i] = lowered;
+  }
+  Value array = builder.create<hw::ArrayCreateOp>(loweredInputs);
+  return setLoweringTo<hw::ArrayGetOp>(op, array, index);
 }
 
 LogicalResult FIRRTLLowering::visitExpr(VerbatimExprOp op) {
