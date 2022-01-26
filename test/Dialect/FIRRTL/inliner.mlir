@@ -230,6 +230,22 @@ sv.verbatim "hello"
 
 }
 
+// Test that symbols are removed due to collisions.
+//
+// CHECK-LABEL: CollidingSymbols
+firrtl.circuit "CollidingSymbols" {
+  firrtl.module @Foo() attributes {annotations = [{class = "firrtl.passes.InlineAnnotation"}]} {
+    %b = firrtl.wire sym @hello : !firrtl.uint<1>
+  }
+  // CHECK-NEXT: firrtl.module @CollidingSymbols
+  // CHECK-NEXT: firrtl.wire sym @[[inlinedSymbol:[_a-zA-Z0-9]+]]
+  // CHECK-NOT:  firrtl.wire sym @[[inlinedSymbol]]
+  firrtl.module @CollidingSymbols() {
+    firrtl.instance foo @Foo()
+    %a = firrtl.wire sym @hello : !firrtl.uint<1>
+  }
+}
+
 // Test NLA handling during inlining for situations involving NLAs where the NLA
 // begins at the main module.  There are four behaviors being tested:
 //
