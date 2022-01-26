@@ -1036,7 +1036,10 @@ BuildOpGroups::buildOp(PatternRewriter &rewriter,
   if (term.getOperands().size() == 0)
     return success();
 
-  // TODO: anything needed?
+  // Replace the pipeline's result(s) with the terminator's results.
+  auto pipeline = term->getParentOfType<staticlogic::PipelineWhileOp>();
+  for (size_t i = 0, e = pipeline.getNumResults(); i < e; ++i)
+    pipeline.getResult(i).replaceAllUsesWith(term.results()[i]);
 
   return success();
 }
@@ -2388,13 +2391,13 @@ void SCFToCalyxPass::runOnOperation() {
 
   /// Sequentially apply each lowering pattern.
   for (auto &pat : loweringPatterns) {
-    // llvm::outs() << "before:\n";
-    // getOperation().dump();
+    llvm::outs() << "before:\n";
+    getOperation().dump();
     LogicalResult partialPatternRes = runPartialPattern(
         pat.pattern,
         /*runOnce=*/pat.strategy == LoweringPattern::Strategy::Once);
-    // llvm::outs() << "after:\n";
-    // getOperation().dump();
+    llvm::outs() << "after:\n";
+    getOperation().dump();
     if (succeeded(partialPatternRes))
       continue;
     signalPassFailure();
