@@ -1035,12 +1035,9 @@ BuildOpGroups::buildOp(PatternRewriter &rewriter,
                        staticlogic::PipelineTerminatorOp term) const {
   if (term.getOperands().size() == 0)
     return success();
-  auto whileOp = cast<staticlogic::PipelineWhileOp>(term->getParentOp());
-  WhileOpInterface whileOpInterface(whileOp);
-  auto assignGroup = buildWhileIterArgAssignments(
-      rewriter, getComponentState(), term.getLoc(), whileOpInterface,
-      getComponentState().getUniqueName(whileOp) + "_latch", term.iter_args());
-  getComponentState().setWhileLatchGroup(whileOpInterface, assignGroup);
+
+  // TODO: anything needed?
+
   return success();
 }
 
@@ -1603,13 +1600,23 @@ class BuildPipelineRegs : public FuncOpPartialLoweringPattern {
 
       // Create a register for each stage.
       for (size_t i = 0; i < op.getNumOperands(); ++i) {
-        // Iter args and results are handled in BuildWhileGroups.
+        // Iter args are created in BuildWhileGroups, so just mark the iter arg
+        // register as the appropriate pipeline register.
         Value stageResult = stage.getResult(i);
-        bool isIterArgOrResult = false;
-        for (auto &use : stageResult.getUses())
-          if (isa<staticlogic::PipelineTerminatorOp>(use.getOwner()))
-            isIterArgOrResult = true;
-        if (isIterArgOrResult)
+        bool isIterArg = false;
+        for (auto &use : stageResult.getUses()) {
+          if (auto term =
+                  dyn_cast<staticlogic::PipelineTerminatorOp>(use.getOwner())) {
+            if (use.getOperandNumber() < term.iter_args().size()) {
+              WhileOpInterface whileOp(stage->getParentOp());
+              auto reg = getComponentState().getWhileIterReg(
+                  whileOp, use.getOperandNumber());
+              getComponentState().addPipelineReg(stage, reg, i);
+              isIterArg = true;
+            }
+          }
+        }
+        if (isIterArg)
           continue;
 
         // Create a register for passing this result to later stages.
@@ -1642,15 +1649,70 @@ class BuildPipelineGroups : public FuncOpPartialLoweringPattern {
     for (auto pipeline : funcOp.getOps<staticlogic::PipelineWhileOp>())
       for (auto stage :
            pipeline.getStagesBlock().getOps<staticlogic::PipelineStageOp>())
-        if (failed(buildStageGroups(stage)))
+        if (failed(buildStageGroups(stage, rewriter)))
           return failure();
 
     return success();
   }
 
-  LogicalResult buildStageGroups(staticlogic::PipelineStageOp stage) const {
-    getComponent()->dump();
-    stage.dump();
+  LogicalResult buildStageGroups(staticlogic::PipelineStageOp stage,
+                                 PatternRewriter &rewriter) const {
+    // Collect pipeline registers for stage.
+    auto pipelineRegisters = getComponentState().getPipelineRegs(stage);
+
+    // For each registered stage result value.
+    auto stageResults = stage.getBodyBlock().getTerminator()->getOperands();
+    for (size_t i = 0, e = stageResults.size(); i < e; ++i) {
+      auto value = stageResults[i];
+
+      // Get the pipeline register for that result.
+      auto pipelineRegister = pipelineRegisters[i];
+
+      // Get the evaluating group for that value.
+      auto evaluatingGroup = getComponentState().getEvaluatingGroup(value);
+
+      // Stitch the register in, depending on whether the group was
+      // combinational or sequential.
+      if (auto combGroup =
+              dyn_cast<calyx::CombGroupOp>(evaluatingGroup.getOperation())) {
+        // Create a sequential group and replace the comb group.
+        PatternRewriter::InsertionGuard g(rewriter);
+        rewriter.setInsertionPoint(combGroup);
+        auto group = rewriter.create<calyx::GroupOp>(combGroup.getLoc(),
+                                                     combGroup.getName());
+        rewriter.cloneRegionBefore(combGroup.getBodyRegion(), group.getBody());
+        group.getBodyRegion().back().erase();
+        rewriter.eraseOp(combGroup);
+
+        // Stitch evaluating group to register.
+        buildAssignmentsForRegisterWrite(getComponentState(), rewriter, group,
+                                         pipelineRegister, value);
+
+      } else {
+        // Get the group and register that is temporarily being written to.
+        auto group = cast<calyx::GroupOp>(evaluatingGroup.getOperation());
+        auto doneOp = group.getDoneOp();
+        auto tempReg =
+            cast<calyx::RegisterOp>(doneOp.src().cast<OpResult>().getOwner());
+        auto tempIn = tempReg.in();
+        auto tempWriteEn = tempReg.write_en();
+
+        // Replace the register write with a write to the pipeline register.
+        for (auto assign : group.getOps<calyx::AssignOp>()) {
+          if (assign.dest() == tempIn)
+            assign.destMutable().assign(pipelineRegister.in());
+          if (assign.dest() == tempWriteEn)
+            assign.destMutable().assign(pipelineRegister.write_en());
+        }
+        doneOp.srcMutable().assign(pipelineRegister.done());
+
+        // Remove the old register completely.
+        rewriter.eraseOp(tempReg);
+      }
+
+      // Replace the stage result uses with the register out.
+      stage.getResult(i).replaceAllUsesWith(pipelineRegister.out());
+    }
     return success();
   }
 };
@@ -2274,9 +2336,6 @@ void SCFToCalyxPass::runOnOperation() {
   /// This pattern creates registers for all basic-block arguments.
   addOncePattern<BuildBBRegs>(loweringPatterns, funcMap, *loweringState);
 
-  /// This pattern creates registers for all pipeline stages.
-  addOncePattern<BuildPipelineRegs>(loweringPatterns, funcMap, *loweringState);
-
   /// This pattern creates registers for the function return values.
   addOncePattern<BuildReturnRegs>(loweringPatterns, funcMap, *loweringState);
 
@@ -2284,6 +2343,9 @@ void SCFToCalyxPass::runOnOperation() {
   /// operations. Additionally, creates a group for assigning the initial
   /// value of the iteration argument registers.
   addOncePattern<BuildWhileGroups>(loweringPatterns, funcMap, *loweringState);
+
+  /// This pattern creates registers for all pipeline stages.
+  addOncePattern<BuildPipelineRegs>(loweringPatterns, funcMap, *loweringState);
 
   /// This pattern converts operations within basic blocks to Calyx library
   /// operators. Combinational operations are assigned inside a
