@@ -368,6 +368,19 @@ public:
     return blockArgRegs[block];
   }
 
+  /// Register reg as being the idx'th pipeline register for the stage.
+  void addPipelineReg(Operation *stage, calyx::RegisterOp reg, unsigned idx) {
+    assert(pipelineRegs[stage].count(idx) == 0);
+    assert(idx < stage->getNumResults());
+    pipelineRegs[stage][idx] = reg;
+  }
+
+  /// Return a mapping of block argument indices to block argument registers.
+  const DenseMap<unsigned, calyx::RegisterOp> &
+  getPipelineRegs(Operation *stage) {
+    return pipelineRegs[stage];
+  }
+
   /// Register reg as being the idx'th iter_args register for 'whileOp'.
   void addWhileIterReg(WhileOpInterface whileOp, calyx::RegisterOp reg,
                        unsigned idx) {
@@ -483,6 +496,9 @@ private:
 
   /// A mapping from blocks to block argument registers.
   DenseMap<Block *, DenseMap<unsigned, calyx::RegisterOp>> blockArgRegs;
+
+  /// A mapping from pipeline stages to their registers.
+  DenseMap<Operation *, DenseMap<unsigned, calyx::RegisterOp>> pipelineRegs;
 
   /// Block arg groups is a list of groups that should be sequentially
   /// executed when passing control from the source to destination block.
@@ -732,12 +748,12 @@ class BuildOpGroups : public FuncOpPartialLoweringPattern {
                              AndIOp, XOrIOp, OrIOp, ExtUIOp, TruncIOp, MulIOp,
                              IndexCastOp,
                              /// static logic
-                             staticlogic::PipelineTerminatorOp,
-                             staticlogic::PipelineStageOp>(
+                             staticlogic::PipelineTerminatorOp>(
                   [&](auto op) { return buildOp(rewriter, op).succeeded(); })
               .template Case<scf::WhileOp, mlir::FuncOp, scf::ConditionOp,
                              staticlogic::PipelineWhileOp,
-                             staticlogic::PipelineRegisterOp>([&](auto) {
+                             staticlogic::PipelineRegisterOp,
+                             staticlogic::PipelineStageOp>([&](auto) {
                 /// Skip: these special cases will be handled separately.
                 return true;
               })
@@ -780,8 +796,6 @@ private:
   LogicalResult buildOp(PatternRewriter &rewriter, memref::StoreOp op) const;
   LogicalResult buildOp(PatternRewriter &rewriter,
                         staticlogic::PipelineTerminatorOp op) const;
-  LogicalResult buildOp(PatternRewriter &rewriter,
-                        staticlogic::PipelineStageOp op) const;
 
   /// buildLibraryOp will build a TCalyxLibOp inside a TGroupOp based on the
   /// source operation TSrcOp.
@@ -1059,20 +1073,6 @@ LogicalResult BuildOpGroups::buildOp(PatternRewriter &rewriter,
     /// when entering the successor block from this block (srcBlock).
     getComponentState().addBlockArgGroup(srcBlock, succBlock.value(), groupOp);
   }
-  return success();
-}
-
-LogicalResult BuildOpGroups::buildOp(PatternRewriter &rewriter,
-                                     staticlogic::PipelineStageOp stage) const {
-  // Stage computations have already been lowered, so simply replace stage
-  // results with the lowered value.
-  auto *stageTerminator = stage.getBodyBlock().getTerminator();
-  for (size_t i = 0; i < stageTerminator->getNumOperands(); ++i) {
-    auto oldValue = stage->getResult(i);
-    auto newValue = stageTerminator->getOperand(i);
-    oldValue.replaceAllUsesWith(newValue);
-  }
-
   return success();
 }
 
@@ -1624,8 +1624,25 @@ class BuildPipelineRegs : public FuncOpPartialLoweringPattern {
         unsigned width = resultType.getIntOrFloatBitWidth();
         auto reg = createReg(getComponentState(), rewriter, value.getLoc(),
                              name, width);
-        value.replaceAllUsesWith(reg.out());
+        getComponentState().addPipelineReg(stage, reg, i);
+        // value.replaceAllUsesWith(reg.out());
       }
+    });
+    return success();
+  }
+};
+
+/// Builds groups for assigning registers for pipeline stages.
+class BuildPipelineGroups : public FuncOpPartialLoweringPattern {
+  using FuncOpPartialLoweringPattern::FuncOpPartialLoweringPattern;
+
+  LogicalResult
+  PartiallyLowerFuncToComp(mlir::FuncOp funcOp,
+                           PatternRewriter &rewriter) const override {
+    funcOp.walk([&](staticlogic::PipelineWhileOp whileOp) {
+      for (auto stage :
+           whileOp.getStagesBlock().getOps<staticlogic::PipelineStageOp>())
+        stage.dump();
     });
     return success();
   }
@@ -2261,6 +2278,10 @@ void SCFToCalyxPass::runOnOperation() {
   /// value of the iteration argument registers.
   addOncePattern<BuildWhileGroups>(loweringPatterns, funcMap, *loweringState);
 
+  /// This pattern creates groups for all pipeline stages.
+  addOncePattern<BuildPipelineGroups>(loweringPatterns, funcMap,
+                                      *loweringState);
+
   /// This pattern converts operations within basic blocks to Calyx library
   /// operators. Combinational operations are assigned inside a
   /// calyx::CombGroupOp, and sequential inside calyx::GroupOps.
@@ -2298,9 +2319,13 @@ void SCFToCalyxPass::runOnOperation() {
 
   /// Sequentially apply each lowering pattern.
   for (auto &pat : loweringPatterns) {
+    // llvm::outs() << "before:\n";
+    // getOperation().dump();
     LogicalResult partialPatternRes = runPartialPattern(
         pat.pattern,
         /*runOnce=*/pat.strategy == LoweringPattern::Strategy::Once);
+    // llvm::outs() << "after:\n";
+    // getOperation().dump();
     if (succeeded(partialPatternRes))
       continue;
     signalPassFailure();
