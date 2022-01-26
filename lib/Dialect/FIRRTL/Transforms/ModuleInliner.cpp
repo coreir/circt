@@ -322,19 +322,28 @@ public:
 } // namespace
 
 /// If this operation or any child operation has a name, add the prefix to that
-/// operation's name.
-static void rename(StringRef prefix, Operation *op) {
+/// operation's name.  If the operation has any inner symbols, make sure that
+/// these are unique in the namespace.
+static void rename(StringRef prefix, Operation *op,
+                   ModuleNamespace &moduleNamespace) {
   llvm::TypeSwitch<Operation *>(op)
       .Case<CombMemOp, InstanceOp, MemOp, MemoryPortOp, NodeOp, RegOp,
             RegResetOp, SeqMemOp, WireOp>([&](auto op) {
         op.nameAttr(
             StringAttr::get(op.getContext(), (prefix + op.name()).str()));
       });
+
+  if (auto sym = op->getAttrOfType<StringAttr>("inner_sym")) {
+    auto newSym = moduleNamespace.newName(sym.getValue());
+    if (newSym != sym.getValue())
+      op->setAttr("inner_sym", StringAttr::get(op->getContext(), newSym));
+  }
+
   // Recursively rename any child operations.
   for (auto &region : op->getRegions())
     for (auto &block : region)
       for (auto &op : block)
-        rename(prefix, &op);
+        rename(prefix, &op, moduleNamespace);
 }
 
 /// This function is used after inlining a module, to handle the conversion
@@ -384,7 +393,8 @@ private:
   void cloneAndRename(StringRef prefix, OpBuilder &b,
                       BlockAndValueMapping &mapper, Operation &op,
                       const DenseMap<Attribute, Attribute> &symbolRenames,
-                      const DenseSet<Attribute> &localSymbols);
+                      const DenseSet<Attribute> &localSymbols,
+                      ModuleNamespace &moduleNamespace);
 
   /// Rewrite the ports of a module as wires.  This is similar to
   /// cloneAndRename, but operating on ports.
@@ -405,14 +415,16 @@ private:
   /// renaming all operations using the prefix.  This clones all operations from
   /// the target, and does not trigger inlining on the target itself.
   void flattenInto(StringRef prefix, OpBuilder &b, BlockAndValueMapping &mapper,
-                   FModuleOp target, DenseSet<Attribute> localSymbols = {});
+                   FModuleOp target, DenseSet<Attribute> localSymbols,
+                   ModuleNamespace &moduleNamespace);
 
   /// Inlines a target module in to the location of the build, prefixing all
   /// operations with prefix.  This clones all operations from the target, and
   /// does not trigger inlining on the target itself.
   void inlineInto(StringRef prefix, OpBuilder &b, BlockAndValueMapping &mapper,
                   FModuleOp target,
-                  DenseMap<Attribute, Attribute> &symbolRenames);
+                  DenseMap<Attribute, Attribute> &symbolRenames,
+                  ModuleNamespace &moduleNamespace);
 
   /// Recursively flatten all instances in a module.
   void flattenInstances(FModuleOp module);
@@ -487,7 +499,7 @@ Inliner::mapPortsToWires(StringRef prefix, OpBuilder &b,
 void Inliner::cloneAndRename(
     StringRef prefix, OpBuilder &b, BlockAndValueMapping &mapper, Operation &op,
     const DenseMap<Attribute, Attribute> &symbolRenames,
-    const DenseSet<Attribute> &localSymbols) {
+    const DenseSet<Attribute> &localSymbols, ModuleNamespace &moduleNamespace) {
   // Strip any non-local annotations which are local.
   AnnotationSet annotations(&op);
   SmallVector<Annotation> newAnnotations;
@@ -520,7 +532,7 @@ void Inliner::cloneAndRename(
 
   // Clone and rename.
   auto *newOp = b.clone(op, mapper);
-  rename(prefix, newOp);
+  rename(prefix, newOp, moduleNamespace);
 
   if (newAnnotations.empty())
     return;
@@ -539,13 +551,15 @@ bool Inliner::shouldInline(Operation *op) {
 
 void Inliner::flattenInto(StringRef prefix, OpBuilder &b,
                           BlockAndValueMapping &mapper, FModuleOp target,
-                          DenseSet<Attribute> localSymbols) {
+                          DenseSet<Attribute> localSymbols,
+                          ModuleNamespace &moduleNamespace) {
   DenseMap<Attribute, Attribute> symbolRenames;
   for (auto &op : *target.getBody()) {
     // If its not an instance op, clone it and continue.
     auto instance = dyn_cast<InstanceOp>(op);
     if (!instance) {
-      cloneAndRename(prefix, b, mapper, op, symbolRenames, localSymbols);
+      cloneAndRename(prefix, b, mapper, op, symbolRenames, localSymbols,
+                     moduleNamespace);
       continue;
     }
 
@@ -554,7 +568,8 @@ void Inliner::flattenInto(StringRef prefix, OpBuilder &b,
     auto target = dyn_cast<FModuleOp>(module);
     if (!target) {
       liveModules.insert(module);
-      cloneAndRename(prefix, b, mapper, op, symbolRenames, localSymbols);
+      cloneAndRename(prefix, b, mapper, op, symbolRenames, localSymbols,
+                     moduleNamespace);
       continue;
     }
 
@@ -569,11 +584,14 @@ void Inliner::flattenInto(StringRef prefix, OpBuilder &b,
     mapResultsToWires(mapper, wires, instance);
 
     // Unconditionally flatten all instance operations.
-    flattenInto(nestedPrefix, b, mapper, target, localSymbols);
+    flattenInto(nestedPrefix, b, mapper, target, localSymbols, moduleNamespace);
   }
 }
 
 void Inliner::flattenInstances(FModuleOp module) {
+  // Namespace used to generate new symbol names.
+  ModuleNamespace moduleNamespace(module);
+
   for (auto &op : llvm::make_early_inc_range(*module.getBody())) {
     // If its not an instance op, skip it.
     auto instance = dyn_cast<InstanceOp>(op);
@@ -615,7 +633,7 @@ void Inliner::flattenInstances(FModuleOp module) {
       instance.getResult(i).replaceAllUsesWith(wires[i]);
 
     // Recursively flatten the target module.
-    flattenInto(nestedPrefix, b, mapper, target, localSymbols);
+    flattenInto(nestedPrefix, b, mapper, target, localSymbols, moduleNamespace);
 
     // Erase the replaced instance.
     instance.erase();
@@ -624,13 +642,14 @@ void Inliner::flattenInstances(FModuleOp module) {
 
 void Inliner::inlineInto(StringRef prefix, OpBuilder &b,
                          BlockAndValueMapping &mapper, FModuleOp parent,
-                         DenseMap<Attribute, Attribute> &symbolRenames) {
+                         DenseMap<Attribute, Attribute> &symbolRenames,
+                         ModuleNamespace &moduleNamespace) {
   // Inline everything in the module's body.
   for (auto &op : *parent.getBody()) {
     // If its not an instance op, clone it and continue.
     auto instance = dyn_cast<InstanceOp>(op);
     if (!instance) {
-      cloneAndRename(prefix, b, mapper, op, symbolRenames, {});
+      cloneAndRename(prefix, b, mapper, op, symbolRenames, {}, moduleNamespace);
       continue;
     }
 
@@ -639,7 +658,7 @@ void Inliner::inlineInto(StringRef prefix, OpBuilder &b,
     auto target = dyn_cast<FModuleOp>(module);
     if (!target) {
       liveModules.insert(module);
-      cloneAndRename(prefix, b, mapper, op, symbolRenames, {});
+      cloneAndRename(prefix, b, mapper, op, symbolRenames, {}, moduleNamespace);
       continue;
     }
 
@@ -648,7 +667,7 @@ void Inliner::inlineInto(StringRef prefix, OpBuilder &b,
       if (liveModules.insert(target).second) {
         worklist.push_back(target);
       }
-      cloneAndRename(prefix, b, mapper, op, symbolRenames, {});
+      cloneAndRename(prefix, b, mapper, op, symbolRenames, {}, moduleNamespace);
       continue;
     }
 
@@ -690,14 +709,18 @@ void Inliner::inlineInto(StringRef prefix, OpBuilder &b,
 
     // Inline the module, it can be marked as flatten and inline.
     if (toBeFlattened) {
-      flattenInto(nestedPrefix, b, mapper, target);
+      flattenInto(nestedPrefix, b, mapper, target, {}, moduleNamespace);
     } else {
-      inlineInto(nestedPrefix, b, mapper, target, symbolRenames);
+      inlineInto(nestedPrefix, b, mapper, target, symbolRenames,
+                 moduleNamespace);
     }
   }
 }
 
 void Inliner::inlineInstances(FModuleOp parent) {
+  // Generate a namespace for this module so that we can safely inline symbols.
+  ModuleNamespace moduleNamespace(parent);
+
   for (auto &op : llvm::make_early_inc_range(*parent.getBody())) {
     // If its not an instance op, skip it.
     auto instance = dyn_cast<InstanceOp>(op);
@@ -758,9 +781,10 @@ void Inliner::inlineInstances(FModuleOp parent) {
 
     // Inline the module, it can be marked as flatten and inline.
     if (toBeFlattened) {
-      flattenInto(nestedPrefix, b, mapper, target);
+      flattenInto(nestedPrefix, b, mapper, target, {}, moduleNamespace);
     } else {
-      inlineInto(nestedPrefix, b, mapper, target, symbolRenames);
+      inlineInto(nestedPrefix, b, mapper, target, symbolRenames,
+                 moduleNamespace);
     }
 
     // Erase the replaced instance.
