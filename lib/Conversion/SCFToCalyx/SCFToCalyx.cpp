@@ -1881,7 +1881,7 @@ private:
         // If it's a pipeline, the latch group(s) not special and are taken care
         // of generically above.
         if (isa<staticlogic::PipelineWhileOp>(whileOp.getOperation()))
-          return res;
+          continue;
 
         // Insert loop-latch at the end of the while group
         rewriter.setInsertionPointToEnd(whileBodyOpBlock);
