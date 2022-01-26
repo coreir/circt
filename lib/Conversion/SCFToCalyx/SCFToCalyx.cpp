@@ -381,6 +381,12 @@ public:
     return pipelineRegs[stage];
   }
 
+  /// Register a value as being part of a sequential group.
+  void addSeqGroupValue(Value value) { seqGroupValues.insert(value); }
+
+  /// Check if a value is part of a sequential group.
+  bool isSeqGroupValue(Value value) { return seqGroupValues.contains(value); }
+
   /// Register reg as being the idx'th iter_args register for 'whileOp'.
   void addWhileIterReg(WhileOpInterface whileOp, calyx::RegisterOp reg,
                        unsigned idx) {
@@ -499,6 +505,9 @@ private:
 
   /// A mapping from pipeline stages to their registers.
   DenseMap<Operation *, DenseMap<unsigned, calyx::RegisterOp>> pipelineRegs;
+
+  /// A set of comb ops that were moved to sequential groups in a pipeline.
+  DenseSet<Value> seqGroupValues;
 
   /// Block arg groups is a list of groups that should be sequentially
   /// executed when passing control from the source to destination block.
@@ -1694,6 +1703,9 @@ class BuildPipelineGroups : public FuncOpPartialLoweringPattern {
         buildAssignmentsForRegisterWrite(getComponentState(), rewriter, group,
                                          pipelineRegister, value);
 
+        // Register all sources as having been made sequential.
+        for (auto assign : group.getOps<calyx::AssignOp>())
+          getComponentState().addSeqGroupValue(assign.src());
       } else {
         // Get the group and register that is temporarily being written to.
         group = cast<calyx::GroupOp>(evaluatingGroup.getOperation());
@@ -2033,6 +2045,11 @@ private:
           isa<calyx::RegisterOp, calyx::MemoryOp, hw::ConstantOp,
               arith::ConstantOp, calyx::MultPipeLibOp, scf::WhileOp,
               staticlogic::PipelineWhileOp>(src.getDefiningOp()))
+        continue;
+
+      /// Things which were previously combinational but were moved into a
+      /// sequential group as part of a pipeline also stop inlining.
+      if (state.isSeqGroupValue(src))
         continue;
 
       auto srcCombGroup = state.getEvaluatingGroup<calyx::CombGroupOp>(src);
