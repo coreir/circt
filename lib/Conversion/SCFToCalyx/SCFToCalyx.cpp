@@ -375,6 +375,42 @@ public:
     pipelineRegs[stage][idx] = reg;
   }
 
+  /// Add a stage's groups to the pipeline prologue.
+  void addPipelinePrologue(Operation *op, SmallVector<StringAttr> groupNames) {
+    pipelinePrologue[op].push_back(groupNames);
+  }
+
+  /// Add a stage's groups to the pipeline epilogue.
+  void addPipelineEpilogue(Operation *op, SmallVector<StringAttr> groupNames) {
+    pipelineEpilogue[op].push_back(groupNames);
+  }
+
+  /// Get the pipeline prologue.
+  void createPipelinePrologue(Operation *op, PatternRewriter &rewriter) {
+    auto stages = pipelinePrologue[op];
+    for (size_t i = 0, e = stages.size(); i < e; ++i) {
+      PatternRewriter::InsertionGuard g(rewriter);
+      auto parOp = rewriter.create<calyx::ParOp>(op->getLoc());
+      rewriter.setInsertionPointToStart(parOp.getBody());
+      for (size_t j = 0; j < i + 1; ++j)
+        for (auto group : stages[j])
+          rewriter.create<calyx::EnableOp>(op->getLoc(), group);
+    }
+  }
+
+  /// Get the pipeline epilogue.
+  void createPipelineEpilogue(Operation *op, PatternRewriter &rewriter) {
+    auto stages = pipelineEpilogue[op];
+    for (size_t i = 0, e = stages.size(); i < e; ++i) {
+      PatternRewriter::InsertionGuard g(rewriter);
+      auto parOp = rewriter.create<calyx::ParOp>(op->getLoc());
+      rewriter.setInsertionPointToStart(parOp.getBody());
+      for (size_t j = i, f = stages.size(); j < f; ++j)
+        for (auto group : stages[j])
+          rewriter.create<calyx::EnableOp>(op->getLoc(), group);
+    }
+  }
+
   /// Return a mapping of block argument indices to block argument registers.
   const DenseMap<unsigned, calyx::RegisterOp> &
   getPipelineRegs(Operation *stage) {
@@ -505,6 +541,16 @@ private:
 
   /// A mapping from pipeline stages to their registers.
   DenseMap<Operation *, DenseMap<unsigned, calyx::RegisterOp>> pipelineRegs;
+
+  /// A mapping from pipeline ops to a vector of vectors of group names that
+  /// constitute the pipeline prologue. Each inner vector consists of the groups
+  /// for one stage.
+  DenseMap<Operation *, SmallVector<SmallVector<StringAttr>>> pipelinePrologue;
+
+  /// A mapping from pipeline ops to a vector of vectors of group names that
+  /// constitute the pipeline epilogue. Each inner vector consists of the groups
+  /// for one stage.
+  DenseMap<Operation *, SmallVector<SmallVector<StringAttr>>> pipelineEpilogue;
 
   /// A set of comb ops that were moved to sequential groups in a pipeline.
   DenseSet<Value> seqGroupValues;
@@ -1672,6 +1718,11 @@ class BuildPipelineGroups : public FuncOpPartialLoweringPattern {
     // Collect pipeline registers for stage.
     auto pipelineRegisters = getComponentState().getPipelineRegs(stage);
 
+    // Collect group names for the prologue or epilogue.
+    SmallVector<StringAttr> prologueGroups;
+    SmallVector<StringAttr> epilogueGroups;
+    auto whileOp = stage->getParentOfType<staticlogic::PipelineWhileOp>();
+
     // For each registered stage result value.
     auto stageResults = stage.getBodyBlock().getTerminator()->getOperands();
     for (size_t i = 0, e = stageResults.size(); i < e; ++i) {
@@ -1733,7 +1784,19 @@ class BuildPipelineGroups : public FuncOpPartialLoweringPattern {
 
       // Mark the group for scheduling in the pipeline's block.
       getComponentState().addBlockScheduleable(stage->getBlock(), group);
+
+      // Add the group to the prologue or epilogue as necessary.
+      if (stage.start() < whileOp.II() - 1)
+        prologueGroups.push_back(group.sym_nameAttr());
+      if (stage.start() >= whileOp.II())
+        epilogueGroups.push_back(group.sym_nameAttr());
     }
+
+    // Add the stage to the prologue or epilogue as necessary.
+    if (!prologueGroups.empty())
+      getComponentState().addPipelinePrologue(whileOp, prologueGroups);
+    if (!epilogueGroups.empty())
+      getComponentState().addPipelineEpilogue(whileOp, epilogueGroups);
 
     return success();
   }
@@ -1885,10 +1948,18 @@ private:
             buildCFGControl(path, rewriter, whileBodyOpBlock, block,
                             whileOp.getBodyBlock(), sequential);
 
-        // If it's a pipeline, the latch group(s) not special and are taken care
-        // of generically above.
-        if (isa<staticlogic::PipelineWhileOp>(whileOp.getOperation()))
+        // If it's a pipeline, add any prologue or epilogue and continue. The
+        // latch group(s) not special and are taken care of generically above.
+        if (isa<staticlogic::PipelineWhileOp>(whileOp.getOperation())) {
+          PatternRewriter::InsertionGuard g(rewriter);
+          rewriter.setInsertionPoint(whileCtrlOp);
+          getComponentState().createPipelinePrologue(whileOp.getOperation(),
+                                                     rewriter);
+          rewriter.setInsertionPointAfter(whileCtrlOp);
+          getComponentState().createPipelineEpilogue(whileOp.getOperation(),
+                                                     rewriter);
           continue;
+        }
 
         // Insert loop-latch at the end of the while group
         rewriter.setInsertionPointToEnd(whileBodyOpBlock);
