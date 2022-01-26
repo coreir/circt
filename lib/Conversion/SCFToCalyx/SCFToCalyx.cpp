@@ -1025,8 +1025,7 @@ BuildOpGroups::buildOp(PatternRewriter &rewriter,
   WhileOpInterface whileOpInterface(whileOp);
   auto assignGroup = buildWhileIterArgAssignments(
       rewriter, getComponentState(), term.getLoc(), whileOpInterface,
-      getComponentState().getUniqueName(whileOp) + "_latch",
-      term.getOperands());
+      getComponentState().getUniqueName(whileOp) + "_latch", term.iter_args());
   getComponentState().setWhileLatchGroup(whileOpInterface, assignGroup);
   return success();
 }
