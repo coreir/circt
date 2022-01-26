@@ -1881,8 +1881,9 @@ private:
 
         /// Only schedule the 'after' block. The 'before' block is
         /// implicitly scheduled when evaluating the while condition.
-        LogicalResult res = buildCFGControl(path, rewriter, whileBodyOpBlock,
-                                            block, whileOp.getBodyBlock());
+        LogicalResult res =
+            buildCFGControl(path, rewriter, whileBodyOpBlock, block,
+                            whileOp.getBodyBlock(), sequential);
 
         // If it's a pipeline, the latch group(s) not special and are taken care
         // of generically above.
