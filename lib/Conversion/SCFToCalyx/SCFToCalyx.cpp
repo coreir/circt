@@ -2427,13 +2427,9 @@ void SCFToCalyxPass::runOnOperation() {
 
   /// Sequentially apply each lowering pattern.
   for (auto &pat : loweringPatterns) {
-    llvm::outs() << "before:\n";
-    getOperation().dump();
     LogicalResult partialPatternRes = runPartialPattern(
         pat.pattern,
         /*runOnce=*/pat.strategy == LoweringPattern::Strategy::Once);
-    llvm::outs() << "after:\n";
-    getOperation().dump();
     if (succeeded(partialPatternRes))
       continue;
     signalPassFailure();
