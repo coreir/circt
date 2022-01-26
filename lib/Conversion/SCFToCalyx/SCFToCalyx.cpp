@@ -1674,6 +1674,9 @@ class BuildPipelineGroups : public FuncOpPartialLoweringPattern {
       // Get the evaluating group for that value.
       auto evaluatingGroup = getComponentState().getEvaluatingGroup(value);
 
+      // Remember the final group for this stage result.
+      calyx::GroupOp group;
+
       // Stitch the register in, depending on whether the group was
       // combinational or sequential.
       if (auto combGroup =
@@ -1681,8 +1684,8 @@ class BuildPipelineGroups : public FuncOpPartialLoweringPattern {
         // Create a sequential group and replace the comb group.
         PatternRewriter::InsertionGuard g(rewriter);
         rewriter.setInsertionPoint(combGroup);
-        auto group = rewriter.create<calyx::GroupOp>(combGroup.getLoc(),
-                                                     combGroup.getName());
+        group = rewriter.create<calyx::GroupOp>(combGroup.getLoc(),
+                                                combGroup.getName());
         rewriter.cloneRegionBefore(combGroup.getBodyRegion(), group.getBody());
         group.getBodyRegion().back().erase();
         rewriter.eraseOp(combGroup);
@@ -1693,7 +1696,7 @@ class BuildPipelineGroups : public FuncOpPartialLoweringPattern {
 
       } else {
         // Get the group and register that is temporarily being written to.
-        auto group = cast<calyx::GroupOp>(evaluatingGroup.getOperation());
+        group = cast<calyx::GroupOp>(evaluatingGroup.getOperation());
         auto doneOp = group.getDoneOp();
         auto tempReg =
             cast<calyx::RegisterOp>(doneOp.src().cast<OpResult>().getOwner());
@@ -1715,7 +1718,11 @@ class BuildPipelineGroups : public FuncOpPartialLoweringPattern {
 
       // Replace the stage result uses with the register out.
       stage.getResult(i).replaceAllUsesWith(pipelineRegister.out());
+
+      // Mark the group for scheduling in the pipeline's block.
+      getComponentState().addBlockScheduleable(stage->getBlock(), group);
     }
+
     return success();
   }
 };
@@ -1858,6 +1865,12 @@ private:
         /// implicitly scheduled when evaluating the while condition.
         LogicalResult res = buildCFGControl(path, rewriter, whileBodyOpBlock,
                                             block, whileOp.getBodyBlock());
+
+        // If it's a pipeline, the latch group(s) not special and are taken care
+        // of generically above.
+        if (isa<staticlogic::PipelineWhileOp>(whileOp.getOperation()))
+          return res;
+
         // Insert loop-latch at the end of the while group
         rewriter.setInsertionPointToEnd(whileBodyOpBlock);
         rewriter.create<calyx::EnableOp>(
