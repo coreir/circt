@@ -1639,11 +1639,18 @@ class BuildPipelineGroups : public FuncOpPartialLoweringPattern {
   LogicalResult
   PartiallyLowerFuncToComp(mlir::FuncOp funcOp,
                            PatternRewriter &rewriter) const override {
-    funcOp.walk([&](staticlogic::PipelineWhileOp whileOp) {
+    for (auto pipeline : funcOp.getOps<staticlogic::PipelineWhileOp>())
       for (auto stage :
-           whileOp.getStagesBlock().getOps<staticlogic::PipelineStageOp>())
-        stage.dump();
-    });
+           pipeline.getStagesBlock().getOps<staticlogic::PipelineStageOp>())
+        if (failed(buildStageGroups(stage)))
+          return failure();
+
+    return success();
+  }
+
+  LogicalResult buildStageGroups(staticlogic::PipelineStageOp stage) const {
+    getComponent()->dump();
+    stage.dump();
     return success();
   }
 };
@@ -2278,10 +2285,6 @@ void SCFToCalyxPass::runOnOperation() {
   /// value of the iteration argument registers.
   addOncePattern<BuildWhileGroups>(loweringPatterns, funcMap, *loweringState);
 
-  /// This pattern creates groups for all pipeline stages.
-  addOncePattern<BuildPipelineGroups>(loweringPatterns, funcMap,
-                                      *loweringState);
-
   /// This pattern converts operations within basic blocks to Calyx library
   /// operators. Combinational operations are assigned inside a
   /// calyx::CombGroupOp, and sequential inside calyx::GroupOps.
@@ -2290,6 +2293,10 @@ void SCFToCalyxPass::runOnOperation() {
   /// having a distinct group for each operation, groups are analogous to SSA
   /// values in the source program.
   addOncePattern<BuildOpGroups>(loweringPatterns, funcMap, *loweringState);
+
+  /// This pattern creates groups for all pipeline stages.
+  addOncePattern<BuildPipelineGroups>(loweringPatterns, funcMap,
+                                      *loweringState);
 
   /// This pattern traverses the CFG of the program and generates a control
   /// schedule based on the calyx::GroupOp's which were registered for each
