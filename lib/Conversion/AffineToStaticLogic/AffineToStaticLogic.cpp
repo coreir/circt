@@ -10,8 +10,10 @@
 #include "../PassDetail.h"
 #include "circt/Analysis/DependenceAnalysis.h"
 #include "circt/Analysis/SchedulingAnalysis.h"
+#include "circt/Dialect/Calyx/CalyxDialect.h"
 #include "circt/Dialect/StaticLogic/StaticLogic.h"
 #include "circt/Scheduling/Algorithms.h"
+#include "circt/Scheduling/Interfaces.h"
 #include "circt/Scheduling/Problems.h"
 #include "mlir/Analysis/AffineAnalysis.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
@@ -22,6 +24,7 @@
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/BlockAndValueMapping.h"
+#include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -29,7 +32,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
-#include <mlir/IR/BuiltinDialect.h>
 
 #define DEBUG_TYPE "affine-to-staticlogic"
 
@@ -39,6 +41,7 @@ using namespace mlir::memref;
 using namespace mlir::scf;
 using namespace circt;
 using namespace circt::analysis;
+using namespace circt::calyx;
 using namespace circt::scheduling;
 using namespace circt::staticlogic;
 
@@ -243,48 +246,12 @@ LogicalResult AffineToStaticLogic::populateOperatorTypes(
   // Retrieve the cyclic scheduling problem for this loop.
   CyclicProblem &problem = schedulingAnalysis->getProblem(forOp);
 
-  // Load the Calyx operator library into the problem. This is a very minimal
-  // set of arithmetic and memory operators for now. This should ultimately be
-  // pulled out into some sort of dialect interface.
-  Problem::OperatorType combOpr = problem.getOrInsertOperatorType("comb");
-  problem.setLatency(combOpr, 0);
-  Problem::OperatorType seqOpr = problem.getOrInsertOperatorType("seq");
-  problem.setLatency(seqOpr, 1);
-  Problem::OperatorType mcOpr = problem.getOrInsertOperatorType("multicycle");
-  problem.setLatency(mcOpr, 3);
-
-  Operation *unsupported;
-  WalkResult result = forOp.getBody()->walk([&](Operation *op) {
-    return TypeSwitch<Operation *, WalkResult>(op)
-        .Case<AddIOp, IfOp, AffineYieldOp, arith::ConstantOp, CmpIOp,
-              IndexCastOp, memref::AllocaOp, YieldOp>([&](Operation *combOp) {
-          // Some known combinational ops.
-          problem.setLinkedOperatorType(combOp, combOpr);
-          return WalkResult::advance();
-        })
-        .Case<AffineLoadOp, AffineStoreOp, memref::LoadOp, memref::StoreOp>(
-            [&](Operation *seqOp) {
-              // Some known sequential ops. In certain cases, reads may be
-              // combinational in Calyx, but taking advantage of that is left as
-              // a future enhancement.
-              problem.setLinkedOperatorType(seqOp, seqOpr);
-              return WalkResult::advance();
-            })
-        .Case<MulIOp>([&](Operation *mcOp) {
-          // Some known multi-cycle ops.
-          problem.setLinkedOperatorType(mcOp, mcOpr);
-          return WalkResult::advance();
-        })
-        .Default([&](Operation *badOp) {
-          unsupported = op;
-          return WalkResult::interrupt();
-        });
-  });
-
-  if (result.wasInterrupted())
-    return forOp.emitError("unsupported operation ") << *unsupported;
-
-  return success();
+  // Load the Calyx operator library into the problem.
+  auto *calyxDialect = getContext().getOrLoadDialect<CalyxDialect>();
+  auto *interface =
+      calyxDialect->getRegisteredInterface<OperatorTypesInterface>();
+  assert(interface);
+  return interface->populateOperatorTypes(problem, forOp.getBody());
 }
 
 /// Solve the pre-computed scheduling problem.

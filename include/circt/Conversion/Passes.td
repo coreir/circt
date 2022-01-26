@@ -28,6 +28,7 @@ def AffineToStaticLogic : FunctionPass<"convert-affine-to-staticlogic"> {
   }];
   let constructor = "circt::createAffineToStaticLogic()";
   let dependentDialects = [
+    "circt::calyx::CalyxDialect",
     "circt::staticlogic::StaticLogicDialect",
     "mlir::arith::ArithmeticDialect",
     "mlir::memref::MemRefDialect",

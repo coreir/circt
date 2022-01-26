@@ -7,6 +7,7 @@ add_circt_library(CIRCTAffineToStaticLogic
   LINK_LIBS PUBLIC
   MLIRAffineToStandard
   MLIRPass
+  CIRCTCalyx
   CIRCTScheduling
   CIRCTSchedulingAnalysis
   CIRCTStaticLogicOps
