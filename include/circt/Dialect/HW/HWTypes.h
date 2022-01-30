@@ -74,6 +74,10 @@ bool type_isa(Type type) {
 
   return false;
 }
+template <typename First, typename Second, typename... Rest>
+bool type_isa(Type Val) {
+  return type_isa<First>(Val) || type_isa<Second, Rest...>(Val);
+}
 
 // type_isa for a nullable argument.
 template <typename BaseTy>
