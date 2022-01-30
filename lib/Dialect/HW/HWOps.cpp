@@ -1729,6 +1729,19 @@ StringRef TypedeclOp::getPreferredName() {
 }
 
 //===----------------------------------------------------------------------===//
+// TypeScopeOP
+//===----------------------------------------------------------------------===//
+
+void TypeScopeOp::build(OpBuilder &builder, OperationState &result,
+                       StringAttr sym_name, std::function<void()> bodyCtor) {
+  result.addAttribute(sym_nameAttrName(result.name), sym_name);
+  OpBuilder::InsertionGuard guard(builder);
+  builder.createBlock(result.addRegion());
+  if (bodyCtor)
+    bodyCtor();
+}
+
+//===----------------------------------------------------------------------===//
 // BitcastOp
 //===----------------------------------------------------------------------===//
 
