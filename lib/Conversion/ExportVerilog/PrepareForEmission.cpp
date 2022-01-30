@@ -184,6 +184,45 @@ static void lowerAlwaysInlineOperation(Operation *op) {
   return;
 }
 
+// Given a value whose use must be inlined, return a copy of this value with all
+// operations in its fan in duplicated.  This ensures that during ExportVerilog
+// this operation will be inlined because the new, returned value has exactly
+// one use.
+static Value lowerAlwaysInlineValue(Value a, OpOperand &use) {
+  auto *op = a.getDefiningOp();
+  if (!op || a.hasOneUse())
+    return a;
+
+  Operation *user = use.getOwner();
+  llvm::errs() << *user << "\n";
+  OpBuilder builder(a.getContext());
+  builder.setInsertionPoint(user);
+  Value newValue = nullptr;
+  SmallVector<std::pair<Operation *, OpOperand *>> worklist({{op, &use}});
+  while (!worklist.empty()) {
+    auto [op, use] = worklist.pop_back_val();
+    llvm::errs() << "  - " << *op << "\n"
+                 << "    " << *use->getOwner() << "\n";
+
+    auto *newOp = builder.clone(*op);
+    builder.setInsertionPoint(newOp);
+    use->set(newOp->getResult(0));
+
+    for (auto pair : llvm::enumerate(newOp->getOperands())) {
+      auto *valueDef = pair.value().getDefiningOp();
+      if (!valueDef)
+        continue;
+      worklist.push_back({valueDef, &newOp->getOpOperand(pair.index())});
+    }
+
+    // Set the newValue in the first iteration of the loop.
+    if (!newValue)
+      newValue = newOp->getResult(0);
+  }
+
+  return newValue;
+}
+
 /// Lower a variadic fully-associative operation into an expression tree.  This
 /// enables long-line splitting to work with them.
 static Value lowerFullyAssociativeOp(Operation &op, OperandRange operands,
@@ -359,6 +398,10 @@ static bool hoistNonSideEffectExpr(Operation *op) {
 void ExportVerilog::prepareHWModule(Block &block,
                                     const LoweringOptions &options) {
 
+  llvm::errs() << "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\n";
+  block.dump();
+  llvm::errs() << "----------------------------------------\n";
+
   // First step, check any nested blocks that exist in this region.  This walk
   // can pull things out to our level of the hierarchy.
   for (auto &op : block) {
@@ -485,7 +528,17 @@ void ExportVerilog::prepareHWModule(Block &block,
       lowerAlwaysInlineOperation(&op);
       continue;
     }
+
+    // Concurrent asserts should have conditions inlined.  Duplicate expressions
+    // in their fan in to do this.
+    if (isa<AssertConcurrentOp, AssumeConcurrentOp, CoverConcurrentOp>(&op)) {
+      lowerAlwaysInlineValue(op.getOperand(1), op.getOpOperand(1));
+      continue;
+    }
   }
+
+  block.dump();
+  llvm::errs() << "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n";
 
   // Now that all the basic ops are settled, check for any use-before def issues
   // in graph regions.  Lower these into explicit wires to keep the emitter
