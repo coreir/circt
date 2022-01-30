@@ -302,6 +302,7 @@ struct TypeScope {
 };
 
 struct ModuleTypeScope : TypeScope {
+  // GlobalScope must be immutable in the multithreading.
   TypeScope *globalScope = nullptr;
   StringAttr moduleName;
   StringRef getScopeName() override { return moduleName.strref(); }
