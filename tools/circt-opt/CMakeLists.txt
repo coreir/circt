@@ -34,6 +34,7 @@ target_link_libraries(circt-opt
   CIRCTScheduling
   CIRCTSchedulingTestPasses
   CIRCTSeq
+        CIRCTSMT
   CIRCTStandardToHandshake
   CIRCTStandardToStaticLogic
   CIRCTStaticLogicOps

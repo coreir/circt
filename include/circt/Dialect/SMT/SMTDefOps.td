@@ -44,8 +44,10 @@ class UTVariadicOp<string mnemonic, list<OpTrait> traits = []> :
       VariadicOp<mnemonic,
                     traits # [SameTypeOperands, SameOperandsAndResultType]> {
 
-  let hasCanonicalizeMethod = true;
-  let hasFolder = true;
+  //let hasCanonicalizeMethod = true;
+  let hasCanonicalizeMethod = false;
+  //let hasFolder = true;
+  let hasFolder = false;
   let verifier =  "return ::verifyUTVariadicOp(*this);";
 
   let assemblyFormat = "$inputs attr-dict `:` qualified(type($result))";

@@ -1,6 +1,6 @@
 add_circt_dialect_library(CIRCTSMT
   #SMTFolds.cpp
-  #SMTOps.cpp
+  SMTOps.cpp
   #SMTAnalysis.cpp
   SMTDialect.cpp
 
