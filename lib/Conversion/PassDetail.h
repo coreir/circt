@@ -65,6 +65,9 @@ class HWDialect;
 class HWModuleOp;
 } // namespace hw
 
+namespace smt {
+class SMTDialect;
+}
 namespace staticlogic {
 class StaticLogicDialect;
 } // namespace staticlogic
