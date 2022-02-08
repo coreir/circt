@@ -19,7 +19,7 @@ include "mlir/Pass/PassBase.td"
 // SMTToComb
 //===----------------------------------------------------------------------===//
 
-def SMTToComb : FunctionPass<"convert-smt-to-comb"> {
+def SMTToComb : Pass<"convert-smt-to-comb"> {
   let summary = "Convert SMT dialect to comb ";
   let description = [{
   }];
