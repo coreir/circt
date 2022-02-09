@@ -40,7 +40,7 @@ class System:
   ]
 
   PASSES = """
-    msft-partition, msft-wire-cleanup,
+    msft-partition,
     lower-msft-to-hw{{tops={tops} verilog-file={verilog_file} tcl-file={tcl_file}}},
     lower-seq-to-sv,hw.module(prettify-verilog),hw.module(hw-cleanup)
   """
@@ -182,6 +182,10 @@ class System:
     import mlir.all_passes_registration
     pm = mlir.passmanager.PassManager.parse("view-op-graph{short-names=" +
                                             ("1" if short_names else "0") + "}")
+    pm.run(self.mod)
+
+  def cleanup(self):
+    pm = mlir.passmanager.PassManager.parse("canonicalize")
     pm.run(self.mod)
 
   def generate(self, generator_names=[], iters=None):
