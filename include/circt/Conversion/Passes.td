@@ -16,6 +16,23 @@
 include "mlir/Pass/PassBase.td"
 
 //===----------------------------------------------------------------------===//
+// SMTToComb
+//===----------------------------------------------------------------------===//
+
+def SMTToComb : Pass<"convert-smt-to-comb"> {
+  let summary = "Convert SMT dialect to comb ";
+  let description = [{
+  }];
+  let constructor = "circt::createSMTToComb()";
+  let dependentDialects = [
+    "comb::CombDialect",
+    "smt::SMTDialect",
+    "mlir::StandardOpsDialect"
+  ];
+
+}
+
+//===----------------------------------------------------------------------===//
 // AffineToStaticLogic
 //===----------------------------------------------------------------------===//
 

@@ -56,11 +56,13 @@ endif ()
 # MLIR/LLVM Configuration
 #-------------------------------------------------------------------------------
   
-  find_package(MLIR REQUIRED CONFIG)
-  
+
   message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
   message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
-  
+
+
+  find_package(MLIR REQUIRED CONFIG)
+
   set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)
   set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/lib)
   
